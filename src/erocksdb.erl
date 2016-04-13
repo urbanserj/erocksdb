@@ -33,6 +33,7 @@
 -export([destroy/2, repair/2, is_empty/1]).
 -export([checkpoint/2]).
 -export([count/1, count/2, status/1, status/2, status/3]).
+-export([validate_options/2, option_types/1]).
 
 -export_type([db_handle/0,
               cf_handle/0,
@@ -41,7 +42,8 @@
               compression_type/0,
               compaction_style/0,
               access_hint/0,
-              wal_recovery_mode/0]).
+              wal_recovery_mode/0,
+              option_type/0]).
 
 -on_load(init/0).
 
@@ -184,6 +186,9 @@ init() ->
                           clear].
 
 -type iterator_action() :: first | last | next | prev | binary().
+
+-type option_type() :: integer | pos_integer | non_neg_integer | float | boolean |
+                       list | binary | string | {member, list()} | {any, [option_type()]}.
 
 async_open(_CallerRef, _Name, _DBOpts, _CFOpts) ->
     erlang:nif_error({error, not_loaded}).
@@ -557,6 +562,129 @@ status(_DBHandle, _Property) ->
                                             Property::binary()).
 status(_DBHandle, _CFHandle, _Property) ->
     {error, not_implemeted}.
+
+
+-spec validate_options(db | cf | read | write, [{atom(), any()}]) ->
+                              {[{atom(), any()}], [{atom(), any()}]}.
+validate_options(Type, Opts) ->
+    Types = option_types(Type),
+    lists:partition(fun({K, V}) ->
+                            KType = lists:keyfind(K, 1, Types),
+                            validate_type(KType, V)
+                    end, Opts).
+
+-spec validate_type({atom(), option_type()}, term()) -> boolean().
+validate_type({_Key, integer}, Value) ->
+    is_integer(Value);
+validate_type({_Key, pos_integer}, Value) ->
+    is_integer(Value) andalso Value > 0;
+validate_type({_Key, non_neg_integer}, Value) ->
+    is_integer(Value) andalso Value >= 0;
+validate_type({_Key, float}, Value) ->
+    is_float(Value);
+validate_type({_Key, boolean}, Value) ->
+    is_boolean(Value);
+validate_type({_Key, list}, Value) ->
+    is_list(Value);
+validate_type({_Key, binary}, Value) ->
+    is_binary(Value);
+validate_type({_Key, string}, Value) when is_list(Value) ->
+    lists:all(fun(X) -> is_integer(X) andalso X >= 0 end, Value);
+validate_type({_Key, {member, List}}, Value) ->
+    lists:member(Value, List);
+validate_type({Key, {any, List}}, Value) ->
+    lists:any(fun(L) -> validate_type({Key, L}, Value) end, List);
+validate_type(_, _) ->
+    false.
+
+-spec option_types(db | cf | read | write) -> [{atom(), option_type()}].
+option_types(db) ->
+    [{total_threads, pos_integer},
+     {create_if_missing, boolean},
+     {create_missing_column_families, boolean},
+     {error_if_exists, boolean},
+     {paranoid_checks, boolean},
+     {max_open_files, integer},
+     {max_total_wal_size, non_neg_integer},
+     {disable_data_sync, boolean},
+     {use_fsync, boolean},
+     {db_paths, list},
+     {db_log_dir, {any, [string, binary]}},
+     {wal_dir, {any, [string, binary]}},
+     {delete_obsolete_files_period_micros, pos_integer},
+     {max_background_compactions, pos_integer},
+     {max_background_flushes, pos_integer},
+     {max_log_file_size, non_neg_integer},
+     {log_file_time_to_roll, non_neg_integer},
+     {keep_log_file_num, pos_integer},
+     {max_manifest_file_size, pos_integer},
+     {table_cache_numshardbits, pos_integer},
+     {wal_ttl_seconds, non_neg_integer},
+     {wal_size_limit_mb, non_neg_integer},
+     {manifest_preallocation_size, pos_integer},
+     {allow_os_buffer, boolean},
+     {allow_mmap_reads, boolean},
+     {allow_mmap_writes, boolean},
+     {is_fd_close_on_exec, boolean},
+     {skip_log_error_on_recovery, boolean},
+     {stats_dump_period_sec, non_neg_integer},
+     {advise_random_on_open, boolean},
+     {access_hint, {member, [normal, sequential, willneed, none]}},
+     {compaction_readahead_size, non_neg_integer},
+     {use_adaptive_mutex, boolean},
+     {bytes_per_sync, non_neg_integer},
+     {skip_stats_update_on_db_open, boolean},
+     {wal_recovery_mode, {member,
+            [tolerate_corrupted_tail_records,
+             absolute_consistency,
+             point_in_time_recovery,
+             skip_any_corrupted_records]}
+     }
+    ];
+option_types(cf) ->
+    [{block_cache_size_mb_for_point_lookup, non_neg_integer},
+     {memtable_memory_budget, pos_integer},
+     {write_buffer_size,  pos_integer},
+     {max_write_buffer_number,  pos_integer},
+     {min_write_buffer_number_to_merge, pos_integer},
+     {compression, {member, [snappy, zlib, bzip2, lz4, lz4h, none]}},
+     {num_levels, pos_integer},
+     {level0_file_num_compaction_trigger, integer},
+     {level0_slowdown_writes_trigger,  integer},
+     {level0_stop_writes_trigger, integer},
+     {max_mem_compaction_level, pos_integer},
+     {target_file_size_base, pos_integer},
+     {target_file_size_multiplier, pos_integer},
+     {max_bytes_for_level_base, pos_integer},
+     {max_bytes_for_level_multiplier, pos_integer},
+     {expanded_compaction_factor,  pos_integer},
+     {source_compaction_factor, pos_integer},
+     {max_grandparent_overlap_factor, pos_integer},
+     {soft_rate_limit, float},
+     {hard_rate_limit, float},
+     {arena_block_size, integer},
+     {disable_auto_compactions, boolean},
+     {purge_redundant_kvs_while_flush, boolean},
+     {compaction_style, {member, [level, universal, fifo, none]}},
+     {verify_checksums_in_compaction, boolean},
+     {filter_deletes, boolean},
+     {max_sequential_skip_in_iterations, pos_integer},
+     {inplace_update_support, boolean},
+     {inplace_update_num_locks, pos_integer},
+     {table_factory_block_cache_size, pos_integer},
+     {in_memory_mode, boolean}];
+option_types(read) ->
+    [{verify_checksums, boolean},
+     {fill_cache, boolean},
+     {iterate_upper_bound, binary},
+     {tailing, boolean},
+     {total_order_seek, boolean},
+     {snapshot, binary}];
+option_types(write) ->
+    [{sync, boolean},
+     {disable_wal, boolean},
+     {timeout_hint_us, non_neg_integer},
+     {ignore_missing_column_families, boolean}].
 
 %% ===================================================================
 %% Internal functions
